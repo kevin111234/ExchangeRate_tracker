@@ -7,13 +7,13 @@ from tqdm import tqdm
 class ExchangeRateCrawler: # 데이터 구성용 class
     def __init__(self): #class 정의 시 바로 실행
         self.base_url = 'https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page='
-        self.date_list = []
-        self.rate_list = []
 
     def generate_urls(self, pages): # url 구성
         return [f'{self.base_url}{i+1}' for i in range(pages)]
     
     def crawl_data(self, urls): # 크롤링 진행
+        date_list = []
+        rate_list = []
         for url in tqdm(urls, desc="크롤링 진행도", unit="page"):
             response = requests.get(url)
             soup = BeautifulSoup(response.content, "html.parser")
@@ -23,20 +23,22 @@ class ExchangeRateCrawler: # 데이터 구성용 class
                 if cells_date and cells_num:
                     date_text = cells_date[0].text.strip()
                     rate_text = cells_num[0].text.strip().replace(",", "")
-                    self.date_list.append(date_text)
-                    self.rate_list.append(float(rate_text))
+                    date_list.append(date_text)
+                    rate_list.append(float(rate_text))
 
-    def create_dataframe(self): # 데이터프레임으로 변환
         return pd.DataFrame({
-            "날짜": self.date_list,
-            "환율": self.rate_list
+            "날짜": date_list,
+            "환율": rate_list
         })
 
     def run(self): # 함수 실행문
         urls = self.generate_urls(37)
-        self.crawl_data(urls)
-        df = self.create_dataframe()
+        df = self.crawl_data(urls)
         print(df)
+
+if __name__ == "__main__":
+    crawler = ExchangeRateCrawler()
+    crawler.run()
 
 class ExchangeRateData: # 환율 관련 추가 데이터 크롤링 class
     def __init__(self):
