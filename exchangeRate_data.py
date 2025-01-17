@@ -3,6 +3,8 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
 from tqdm import tqdm
+import os
+from dotenv import load_dotenv
 
 class ExchangeRateCrawler: # 데이터 구성용 class
     def __init__(self): #class 정의 시 바로 실행
@@ -32,17 +34,87 @@ class ExchangeRateCrawler: # 데이터 구성용 class
         })
 
     def run(self): # 함수 실행문
-        urls = self.generate_urls(37)
+        urls = self.generate_urls(80)
         df = self.crawl_data(urls)
         print(df)
 
-if __name__ == "__main__":
-    crawler = ExchangeRateCrawler()
-    crawler.run()
+class ECOSFetcher:
+    """
+    A class to fetch data from the Bank of Korea ECOS API.
+    """
 
-class ExchangeRateData: # 환율 관련 추가 데이터 크롤링 class
-    def __init__(self):
-        print()
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://ecos.bok.or.kr/api/StatisticSearch"
+
+    def fetch_data(self, stat_code, start_date, end_date, item_code1=None):
+        """
+        Fetch data from ECOS API by splitting requests into smaller date ranges.
+
+        Parameters:
+            stat_code (str): Statistic code.
+            start_date (str): Start date in YYYYMM format.
+            end_date (str): End date in YYYYMM format.
+            item_code1 (str, optional): Item code for filtering.
+
+        Returns:
+            pd.DataFrame: DataFrame containing the fetched data.
+        """
+        # Split the date range into years
+        start_year = int(start_date[:4])
+        end_year = int(end_date[:4])
+
+        all_data = []
+        for year in range(start_year, end_year + 1):
+            # Define the start and end dates for the current year
+            year_start = f"{year}01"
+            year_end = f"{year}12"
+            if year == start_year:
+                year_start = start_date
+            if year == end_year:
+                year_end = end_date
+
+            # Construct the API URL
+            url = f"{self.base_url}/{self.api_key}/json/en/1/1000/{stat_code}/M/{year_start}/{year_end}/"
+            if item_code1:
+                url += f"{item_code1}/"
+
+            # Make the API request
+            response = requests.get(url)
+            if response.status_code != 200:
+                raise Exception(f"Failed to fetch data: HTTP {response.status_code}")
+
+            # Parse the response
+            data = response.json()
+            rows = data.get("StatisticSearch", {}).get("row", [])
+            if not rows:
+                print(f"No data found for year {year}.")
+                continue
+
+            # Append data for this year
+            all_data.extend(rows)
+
+        if not all_data:
+            raise Exception("No data was retrieved for the specified date range.")
+
+        # Convert to DataFrame
+        df = pd.DataFrame(all_data)
+        return df[["TIME", "DATA_VALUE"]].rename(columns={"TIME": "Date", "DATA_VALUE": "Value"})
+
+# Example usage
+if __name__ == "__main__":
+    load_dotenv()
+    api_key = os.getenv("ECOS_API_KEY")
+    fetcher = ECOSFetcher(api_key)
+
+    # Fetch Korean policy interest rate (722Y001) from 2000 to 2025
+    try:
+        df_korea = fetcher.fetch_data(stat_code="722Y001", start_date="200001", end_date="202512")
+        print(df_korea)
+
+    except Exception as e:
+        print(f"Error: {e}")
+
 
 # 필요한 데이터
 """
@@ -93,3 +165,7 @@ class ExchangeRateData: # 환율 관련 추가 데이터 크롤링 class
     국제 유가, 곡물가격 등의 시계열 데이터를 구축
     가격 변동성, 변동폭 등의 지표로 활용 가능
 """
+
+if __name__ == "__main__":
+    crawler = ExchangeRateCrawler()
+    crawler.run()
