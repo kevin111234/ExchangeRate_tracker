@@ -6,17 +6,20 @@ from tqdm import tqdm
 import os
 from dotenv import load_dotenv
 
-class ExchangeRateCrawler: # 데이터 구성용 class
-    def __init__(self): #class 정의 시 바로 실행
+class ExchangeRateCrawler:
+    """
+    A class to crawl exchange rate data from Naver Finance.
+    """
+    def __init__(self):
         self.base_url = 'https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd=FX_USDKRW&page='
 
-    def generate_urls(self, pages): # url 구성
+    def generate_urls(self, pages):
         return [f'{self.base_url}{i+1}' for i in range(pages)]
-    
-    def crawl_data(self, urls): # 크롤링 진행
+
+    def crawl_data(self, urls):
         date_list = []
         rate_list = []
-        for url in tqdm(urls, desc="크롤링 진행도", unit="page"):
+        for url in tqdm(urls, desc="Crawling progress", unit="page"):
             response = requests.get(url)
             soup = BeautifulSoup(response.content, "html.parser")
             for row in soup.find_all("tr"):
@@ -29,14 +32,15 @@ class ExchangeRateCrawler: # 데이터 구성용 class
                     rate_list.append(float(rate_text))
 
         return pd.DataFrame({
-            "날짜": date_list,
-            "환율": rate_list
+            "Date": date_list,
+            "Exchange Rate": rate_list
         })
 
-    def run(self): # 함수 실행문
+    def run(self):
         urls = self.generate_urls(80)
         df = self.crawl_data(urls)
-        print(df)
+        df['Date'] = pd.to_datetime(df['Date'], format="%Y.%m.%d")
+        return df
 
 class ECOSFetcher:
     """
@@ -47,74 +51,72 @@ class ECOSFetcher:
         self.api_key = api_key
         self.base_url = "https://ecos.bok.or.kr/api/StatisticSearch"
 
-    def fetch_data(self, stat_code, start_date, end_date, item_code1=None):
-        """
-        Fetch data from ECOS API by splitting requests into smaller date ranges.
+    def fetch_data(self, stat_code, start_date, end_date, freq):
+        url = f"{self.base_url}/{self.api_key}/json/en/1/1000/{stat_code}/{freq}/{start_date}/{end_date}/"
 
-        Parameters:
-            stat_code (str): Statistic code.
-            start_date (str): Start date in YYYYMM format.
-            end_date (str): End date in YYYYMM format.
-            item_code1 (str, optional): Item code for filtering.
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to fetch data: HTTP {response.status_code}")
 
-        Returns:
-            pd.DataFrame: DataFrame containing the fetched data.
-        """
-        # Split the date range into years
-        start_year = int(start_date[:4])
-        end_year = int(end_date[:4])
+        data = response.json()
+        rows = data.get("StatisticSearch", {}).get("row", [])
+        if not rows:
+            print(f"No data found for stat_code={stat_code}, start_date={start_date}, end_date={end_date}")
+            return pd.DataFrame()
 
-        all_data = []
-        for year in range(start_year, end_year + 1):
-            # Define the start and end dates for the current year
-            year_start = f"{year}01"
-            year_end = f"{year}12"
-            if year == start_year:
-                year_start = start_date
-            if year == end_year:
-                year_end = end_date
+        df = pd.DataFrame(rows)
+        return df[["TIME", "DATA_VALUE"]].rename(columns={"TIME": "Date", "DATA_VALUE": stat_code})
 
-            # Construct the API URL
-            url = f"{self.base_url}/{self.api_key}/json/en/1/1000/{stat_code}/M/{year_start}/{year_end}/"
-            if item_code1:
-                url += f"{item_code1}/"
+    def fetch_multiple_data(self, specs):
+        data_dict = {}
 
-            # Make the API request
-            response = requests.get(url)
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch data: HTTP {response.status_code}")
+        for spec in specs:
+            print(f"Fetching data for {spec['name']}...")
+            freq = spec.get("freq", "M")  # Use frequency specified for each dataset or default to "M"
+            start_date = spec.get("start_date", "201001")
+            end_date = spec.get("end_date", "202512")
+            df = self.fetch_data(spec["stat_code"], start_date, end_date, freq)
+            if df.empty:
+                print(f"No data found for {spec['name']}.")
+                data_dict[spec['name']] = pd.DataFrame()
+            else:
+                df = df.rename(columns={spec["stat_code"]: spec["name"]})
+                data_dict[spec['name']] = df
 
-            # Parse the response
-            data = response.json()
-            rows = data.get("StatisticSearch", {}).get("row", [])
-            if not rows:
-                print(f"No data found for year {year}.")
-                continue
+        return data_dict
 
-            # Append data for this year
-            all_data.extend(rows)
-
-        if not all_data:
-            raise Exception("No data was retrieved for the specified date range.")
-
-        # Convert to DataFrame
-        df = pd.DataFrame(all_data)
-        return df[["TIME", "DATA_VALUE"]].rename(columns={"TIME": "Date", "DATA_VALUE": "Value"})
-
-# Example usage
 if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("ECOS_API_KEY")
+
+    # Instantiate ECOSFetcher
     fetcher = ECOSFetcher(api_key)
 
-    # Fetch Korean policy interest rate (722Y001) from 2000 to 2025
+    # Define datasets to fetch
+    data_specs = [
+        {"name": "Policy Interest Rate", "stat_code": "722Y001", "freq": "M", "start_date": "201001", "end_date": "202512"},
+        {"name": "GDP Growth", "stat_code": "902Y015", "freq": "A", "start_date": "2001", "end_date": "2021"},
+        {"name": "CPI", "stat_code": "902Y002", "freq": "M", "start_date": "201001", "end_date": "202512"},
+        {"name": "Foreign Reserves", "stat_code": "901Y020", "freq": "M", "start_date": "201001", "end_date": "202512"}
+    ]
+
+    # Fetch ECOS data
     try:
-        df_korea = fetcher.fetch_data(stat_code="722Y001", start_date="200001", end_date="202512")
-        print(df_korea)
-
+        ecos_data_dict = fetcher.fetch_multiple_data(data_specs)
+        for name, df in ecos_data_dict.items():
+            print(f"Data for {name}:")
+            print(df.head())
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error fetching ECOS data: {e}")
 
+    # Crawl exchange rate data
+    try:
+        crawler = ExchangeRateCrawler()
+        exchange_rate_df = crawler.run()
+        print("Exchange Rate Data:")
+        print(exchange_rate_df.head())
+    except Exception as e:
+        print(f"Error fetching exchange rate data: {e}")
 
 # 필요한 데이터
 """
@@ -165,7 +167,3 @@ if __name__ == "__main__":
     국제 유가, 곡물가격 등의 시계열 데이터를 구축
     가격 변동성, 변동폭 등의 지표로 활용 가능
 """
-
-if __name__ == "__main__":
-    crawler = ExchangeRateCrawler()
-    crawler.run()
