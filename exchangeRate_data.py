@@ -52,20 +52,39 @@ class ECOSFetcher:
         self.base_url = "https://ecos.bok.or.kr/api/StatisticSearch"
 
     def fetch_data(self, stat_code, start_date, end_date, freq):
-        url = f"{self.base_url}/{self.api_key}/json/en/1/1000/{stat_code}/{freq}/{start_date}/{end_date}/"
+        per_page = 1000
+        start_index = 1
+        all_rows = []
 
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"Failed to fetch data: HTTP {response.status_code}")
+        while True:
+            end_index = start_index + per_page - 1
+            url = f"{self.base_url}/{self.api_key}/json/en/{start_index}/{end_index}/{stat_code}/{freq}/{start_date}/{end_date}/"
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+            except Exception as e:
+                print(f"Error fetching data for {stat_code} from {start_index} to {end_index}: {e}")
+                break
 
-        data = response.json()
-        rows = data.get("StatisticSearch", {}).get("row", [])
-        if not rows:
+            rows = data.get("StatisticSearch", {}).get("row", [])
+            if not rows:
+                break
+
+            all_rows.extend(rows)
+            # 만약 반환된 데이터 수가 per_page 미만이면 마지막 페이지
+            if len(rows) < per_page:
+                break
+
+            start_index += per_page
+
+        if not all_rows:
             print(f"No data found for stat_code={stat_code}, start_date={start_date}, end_date={end_date}")
             return pd.DataFrame()
 
-        df = pd.DataFrame(rows)
-        return df[["TIME", "DATA_VALUE"]].rename(columns={"TIME": "Date", "DATA_VALUE": stat_code})
+        df = pd.DataFrame(all_rows)
+        df = df[["TIME", "DATA_VALUE"]].rename(columns={"TIME": "Date", "DATA_VALUE": stat_code})
+        return df
 
     def fetch_multiple_data(self, specs):
         data_dict = {}
@@ -95,8 +114,8 @@ if __name__ == "__main__":
     # Define datasets to fetch
     data_specs = [
         {"name": "Policy Interest Rate", "stat_code": "722Y001", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "GDP Growth", "stat_code": "902Y015", "freq": "A", "start_date": "2001", "end_date": "2021"},
-        {"name": "CPI", "stat_code": "902Y002", "freq": "M", "start_date": "201001", "end_date": "202512"},
+        {"name": "GDP Growth", "stat_code": "902Y015", "freq": "A", "start_date": "2001", "end_date": "2024"},
+        {"name": "CPI", "stat_code": "902Y002", "freq": "A", "start_date": "2010", "end_date": "2024"},
         {"name": "Foreign Reserves", "stat_code": "901Y020", "freq": "M", "start_date": "201001", "end_date": "202512"}
     ]
 
@@ -105,7 +124,7 @@ if __name__ == "__main__":
         ecos_data_dict = fetcher.fetch_multiple_data(data_specs)
         for name, df in ecos_data_dict.items():
             print(f"Data for {name}:")
-            print(df.head())
+            print(df)
     except Exception as e:
         print(f"Error fetching ECOS data: {e}")
 
@@ -114,7 +133,7 @@ if __name__ == "__main__":
         crawler = ExchangeRateCrawler()
         exchange_rate_df = crawler.run()
         print("Exchange Rate Data:")
-        print(exchange_rate_df.head())
+        print(exchange_rate_df)
     except Exception as e:
         print(f"Error fetching exchange rate data: {e}")
 
