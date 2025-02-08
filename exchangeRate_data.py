@@ -85,6 +85,22 @@ class ECOSFetcher:
         keep_cols = ["TIME", "DATA_VALUE"] + extra_cols
         df_clean = df[keep_cols].copy()
         
+        # 기준금리 데이터 특별 처리
+        if spec["name"] == "Policy Interest Rate":
+            try:
+                # DATA_VALUE를 숫자형으로 변환
+                df_clean["DATA_VALUE"] = pd.to_numeric(df_clean["DATA_VALUE"], errors='coerce')
+                # 같은 날짜의 데이터는 평균값 사용
+                df_clean = df_clean.groupby("TIME", as_index=False).agg({
+                    "DATA_VALUE": "mean",
+                    "ITEM_CODE1": "first",
+                    "ITEM_NAME1": "first"
+                })
+            except Exception as e:
+                print(f"Warning: Error processing Policy Interest Rate data - {e}")
+                # 에러 발생 시 원본 데이터 유지
+                pass
+        
         # 컬럼명 변경: TIME -> Date, DATA_VALUE -> spec["name"]
         df_clean = df_clean.rename(columns={"TIME": "Date", "DATA_VALUE": spec["name"]})
         
@@ -94,6 +110,7 @@ class ECOSFetcher:
         df_clean["Date"] = pd.to_datetime(df_clean["Date"], format=time_fmt, errors="coerce")
         df_clean[spec["name"]] = pd.to_numeric(df_clean[spec["name"]], errors="coerce")
         df_clean = df_clean.dropna(subset=["Date", spec["name"]])
+        
         return df_clean
 
     def fetch_multiple_data(self, specs):
@@ -123,6 +140,16 @@ def split_by_country(df, country_keyword):
         return df
     return df[df["ITEM_NAME1"].str.contains(country_keyword, case=False, na=False)]
 
+def split_by_country_code(df, country_keyword):
+    """
+    ITEM_NAME1 컬럼에 country_keyword가 포함된 행만 추출.
+    만약 해당 컬럼이 없으면 원본 df 반환.
+    """
+    if "ITEM_CODE1" not in df.columns:
+        print("ITEM_CODE1 컬럼이 없어 국가별 분리가 불가능합니다.")
+        return df
+    return df[df["ITEM_CODE1"].str.contains(country_keyword, case=False, na=False)]
+
 def split_interest_rates(df):
     """
     ITEM_CODE1 컬럼을 기준으로 단기와 장기 금리 데이터를 분리.
@@ -147,13 +174,9 @@ def split_ktb_yields(df):
     
     ktb_codes = {
         "1Y": "5030000",
-        "2Y": "5090000",
         "3Y": "5020000",
         "5Y": "5040000",
         "10Y": "5050000",
-        "20Y": "5060000",
-        "30Y": "5070000",
-        "50Y": "5080000"
     }
     
     result = {}
@@ -179,15 +202,15 @@ def data_saver():
 
     # 수집할 ECOS 데이터 스펙 (미제공 stat_code는 결과가 없을 수 있음)
     data_specs = [
-        {"name": "Policy Interest Rate", "stat_code": "722Y001", "freq": "M", "start_date": "201001", "end_date": "202512"},
+        {"name": "Policy Interest Rate", "stat_code": "722Y001", "freq": "M", "start_date": "200101", "end_date": "202512"},
         {"name": "GDP Growth", "stat_code": "902Y015", "freq": "A", "start_date": "2001", "end_date": "2025"},
-        {"name": "CPI", "stat_code": "902Y002", "freq": "A", "start_date": "2010", "end_date": "2024"},
-        {"name": "Foreign Reserves", "stat_code": "901Y020", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "LT, ST Interest Rate", "stat_code": "902Y023", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "PPI", "stat_code": "902Y007", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "Exports", "stat_code": "901Y010", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "Imports", "stat_code": "901Y011", "freq": "M", "start_date": "201001", "end_date": "202512"},
-        {"name": "KTB Yield", "stat_code": "721Y001", "freq": "M", "start_date": "201001", "end_date": "202512"},
+        {"name": "CPI", "stat_code": "902Y002", "freq": "A", "start_date": "2001", "end_date": "2025"},
+        {"name": "Foreign Reserves", "stat_code": "732Y001", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "LT, ST Interest Rate", "stat_code": "902Y023", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "PPI", "stat_code": "902Y007", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "Exports", "stat_code": "902Y012", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "Imports", "stat_code": "902Y013", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "KTB Yield", "stat_code": "721Y001", "freq": "M", "start_date": "200101", "end_date": "202512"},
     ]
     data_dict = {}
 
@@ -195,9 +218,15 @@ def data_saver():
         fetcher = ECOSFetcher(api_key)
         ecos_data_dict = fetcher.fetch_multiple_data(data_specs)
         for name, df in ecos_data_dict.items():
-            data_dict[name] = df
+            if name not in ["GDP Growth", "CPI", "LT, ST Interest Rate", "PPI", "KTB Yield", "Exports", "Imports", "Foreign Reserves"]:
+                data_dict[name] = df
     except Exception as e:
         print(f"Error fetching ECOS data: {e}")
+
+    if "Policy Interest Rate" in ecos_data_dict and not ecos_data_dict["Policy Interest Rate"].empty:
+        df_interest_rate = ecos_data_dict["Policy Interest Rate"]
+        kor_interest_rate = split_by_country_code(df_interest_rate, "0101000")
+        data_dict["Policy_Interest_Rate"] = kor_interest_rate
 
     # -- 국가별 분리 --
     # GDP Growth 데이터에서 미국과 한국 데이터를 분리
@@ -208,12 +237,38 @@ def data_saver():
         data_dict["US_GDP"] = us_gdp
         data_dict["KOR_GDP"] = kor_gdp
 
+    if "CPI" in ecos_data_dict and not ecos_data_dict["CPI"].empty:
+        df_cpi = ecos_data_dict["CPI"]
+        us_cpi = split_by_country(df_cpi, "United States")
+        kor_cpi = split_by_country(df_cpi, "Korea")
+        data_dict["US_CPI"] = us_cpi
+        data_dict["KOR_CPI"] = kor_cpi
+
     if "PPI" in ecos_data_dict and not ecos_data_dict["PPI"].empty:
         df_ppi = ecos_data_dict["PPI"]
         us_ppi = split_by_country(df_ppi, "United States")
         kor_ppi = split_by_country(df_ppi, "Korea")
         data_dict["US_PPI"] = us_ppi
         data_dict["KOR_PPI"] = kor_ppi
+
+    if "Exports" in ecos_data_dict and not ecos_data_dict["Exports"].empty:
+        df_export = ecos_data_dict["Exports"]
+        us_export = split_by_country_code(df_export, "US")
+        kor_export = split_by_country_code(df_export, "KR")
+        data_dict["US_Exports"] = us_export
+        data_dict["KOR_Exports"] = kor_export
+
+    if "Imports" in ecos_data_dict and not ecos_data_dict["Imports"].empty:
+        df_import = ecos_data_dict["Imports"]
+        us_import = split_by_country_code(df_import, "US")
+        kor_import = split_by_country_code(df_import, "KR")
+        data_dict["US_Imports"] = us_import
+        data_dict["KOR_Imports"] = kor_import
+
+    if "Foreign Reserves" in ecos_data_dict and not ecos_data_dict["Foreign Reserves"].empty:
+        df_FR = ecos_data_dict["Foreign Reserves"]
+        kor_FR = split_by_country_code(df_FR, "04")
+        data_dict["Foreign_Reserves"] = kor_FR
 
     # -- 장단기 금리 분리 예시 --
     # LT, ST Interest Rate 데이터에서 장기, 단기 금리로 분리
@@ -228,7 +283,6 @@ def data_saver():
         df_ktb = ecos_data_dict["KTB Yield"]
         ktb_yields = split_ktb_yields(df_ktb)
         
-        print("\n[국고채 수익률 분리]")
         for maturity, df in ktb_yields.items():
             data_dict[f"KTB_{maturity}"] = df
 
@@ -241,3 +295,6 @@ def data_saver():
         print(f"Error fetching exchange rate data: {e}")
 
     return data_dict
+
+if __name__ == "__main__":
+    print(data_saver())
