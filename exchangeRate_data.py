@@ -173,7 +173,7 @@ def split_ktb_yields(df):
     return result
 
 # --- 메인 실행부 ---
-if __name__ == "__main__":
+def data_saver():
     load_dotenv()
     api_key = os.getenv("ECOS_API_KEY")
 
@@ -189,13 +189,13 @@ if __name__ == "__main__":
         {"name": "Imports", "stat_code": "901Y011", "freq": "M", "start_date": "201001", "end_date": "202512"},
         {"name": "KTB Yield", "stat_code": "721Y001", "freq": "M", "start_date": "201001", "end_date": "202512"},
     ]
+    data_dict = {}
 
     try:
         fetcher = ECOSFetcher(api_key)
         ecos_data_dict = fetcher.fetch_multiple_data(data_specs)
         for name, df in ecos_data_dict.items():
-            print(f"\n[원본 정제 데이터] Data for {name}:")
-            print(df)
+            data_dict[name] = df
     except Exception as e:
         print(f"Error fetching ECOS data: {e}")
 
@@ -205,29 +205,23 @@ if __name__ == "__main__":
         df_gdp = ecos_data_dict["GDP Growth"]
         us_gdp = split_by_country(df_gdp, "United States")
         kor_gdp = split_by_country(df_gdp, "Korea")
-        print("\n[국가별 분리] US GDP Growth:")
-        print(us_gdp)
-        print("\n[국가별 분리] Korean GDP Growth:")
-        print(kor_gdp)
+        data_dict["US_GDP"] = us_gdp
+        data_dict["KOR_GDP"] = kor_gdp
 
     if "PPI" in ecos_data_dict and not ecos_data_dict["PPI"].empty:
-        df_gdp = ecos_data_dict["PPI"]
-        us_gdp = split_by_country(df_gdp, "United States")
-        kor_gdp = split_by_country(df_gdp, "Korea")
-        print("\n[국가별 분리] US PPI:")
-        print(us_gdp)
-        print("\n[국가별 분리] Korean PPI:")
-        print(kor_gdp)
+        df_ppi = ecos_data_dict["PPI"]
+        us_ppi = split_by_country(df_ppi, "United States")
+        kor_ppi = split_by_country(df_ppi, "Korea")
+        data_dict["US_PPI"] = us_ppi
+        data_dict["KOR_PPI"] = kor_ppi
 
     # -- 장단기 금리 분리 예시 --
     # LT, ST Interest Rate 데이터에서 장기, 단기 금리로 분리
     if "LT, ST Interest Rate" in ecos_data_dict and not ecos_data_dict["LT, ST Interest Rate"].empty:
         df_ir = ecos_data_dict["LT, ST Interest Rate"]
         ir_split = split_interest_rates(df_ir)
-        print("\n[금리 분리] Long-term Interest Rate:")
-        print(ir_split["long_term"])
-        print("\n[금리 분리] Short-term Interest Rate:")
-        print(ir_split["short_term"])
+        data_dict["LT_Interest_Rate"]=ir_split["long_term"]
+        data_dict["ST_Interest_Rate"]=ir_split["short_term"]
     
     # 국고채 수익률 데이터 분리
     if "KTB Yield" in ecos_data_dict and not ecos_data_dict["KTB Yield"].empty:
@@ -236,14 +230,14 @@ if __name__ == "__main__":
         
         print("\n[국고채 수익률 분리]")
         for maturity, df in ktb_yields.items():
-            print(f"\n{maturity} 국고채 수익률:")
-            print(df)
+            data_dict[f"KTB_{maturity}"] = df
 
     # 환율 데이터 크롤링
     try:
         crawler = ExchangeRateCrawler()
         exchange_rate_df = crawler.run()
-        print("\nExchange Rate Data:")
-        print(exchange_rate_df.head())
+        data_dict["exchange_rate"] = exchange_rate_df
     except Exception as e:
         print(f"Error fetching exchange rate data: {e}")
+
+    return data_dict
