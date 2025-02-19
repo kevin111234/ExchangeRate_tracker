@@ -195,6 +195,36 @@ def split_ktb_yields(df):
     
     return result
 
+def split_balance_of_payments(df):
+    """
+    국제수지 데이터를 항목별로 분리하여 반환
+    ITEM_CODE1 기준으로 Current Account, Capital, Finance, Errors 등 분류
+    """
+    if "ITEM_CODE1" not in df.columns:
+        print("ITEM_CODE1 컬럼이 없어 국제수지 데이터를 분리할 수 없습니다.")
+        return {}
+
+    # 국제수지 코드별 매칭
+    bop_categories = {
+        "account": "000000",  # Current account
+        "capital": "BOPC00000000",    # Capital transactions (BOPC로 시작하는 코드)
+        "finance": "BOPF00000000",    # Financial transactions (BOPF로 시작하는 코드)
+        "errors": "BOPO00000000"      # Errors and omissions
+    }
+
+    result = {}
+    for key, code in bop_categories.items():
+        bop_data = df[df["ITEM_CODE1"] == code].copy()
+
+        if not bop_data.empty:
+            bop_data = bop_data.rename(columns={"balance of payments": f"BOP_{key}"})
+            bop_data = bop_data[["Date", f"BOP_{key}"]]
+            result[f"BOP_{key}"] = bop_data
+        else:
+            print(f"Warning: No data found for {key} category.")
+
+    return result
+
 # --- 메인 실행부 ---
 def data_saver():
     load_dotenv()
@@ -206,20 +236,20 @@ def data_saver():
         {"name": "GDP Growth", "stat_code": "902Y015", "freq": "A", "start_date": "2001", "end_date": "2025"},
         {"name": "CPI", "stat_code": "902Y002", "freq": "A", "start_date": "2001", "end_date": "2025"},
         {"name": "Foreign Reserves", "stat_code": "732Y001", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        # 장단기 스프레드 따지기
         {"name": "LT, ST Interest Rate", "stat_code": "902Y023", "freq": "M", "start_date": "200101", "end_date": "202512"},
         {"name": "PPI", "stat_code": "902Y007", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        # 수출 수입 차이를 따져서 무역수지 따지기
         {"name": "Exports", "stat_code": "902Y012", "freq": "M", "start_date": "200101", "end_date": "202512"},
         {"name": "Imports", "stat_code": "902Y013", "freq": "M", "start_date": "200101", "end_date": "202512"},
         {"name": "KTB Yield", "stat_code": "721Y001", "freq": "M", "start_date": "200101", "end_date": "202512"},
+        {"name": "balance of payments", "stat_code": "301Y013", "freq": "M", "start_date": "200101", "end_date": "202512"},
     ]
     data_dict = {}
 
     try:
         fetcher = ECOSFetcher(api_key)
         ecos_data_dict = fetcher.fetch_multiple_data(data_specs)
-        for name, df in ecos_data_dict.items():
-            if name not in ["GDP Growth", "CPI", "LT, ST Interest Rate", "PPI", "KTB Yield", "Exports", "Imports", "Foreign Reserves"]:
-                data_dict[name] = df
     except Exception as e:
         print(f"Error fetching ECOS data: {e}")
 
@@ -255,28 +285,35 @@ def data_saver():
         df_export = ecos_data_dict["Exports"]
         us_export = split_by_country_code(df_export, "US")
         kor_export = split_by_country_code(df_export, "KR")
-        data_dict["US_Exports"] = us_export
-        data_dict["KOR_Exports"] = kor_export
+
 
     if "Imports" in ecos_data_dict and not ecos_data_dict["Imports"].empty:
         df_import = ecos_data_dict["Imports"]
         us_import = split_by_country_code(df_import, "US")
         kor_import = split_by_country_code(df_import, "KR")
-        data_dict["US_Imports"] = us_import
-        data_dict["KOR_Imports"] = kor_import
+
+    if not us_import.empty and not us_export.empty and not kor_export.empty and not kor_import.empty:
+        trade_df = pd.merge(kor_export, kor_import, on="Date", suffixes=("_export", "_import"))
+        kor_trade = trade_df["Exports"] - trade_df["Imports"]
+        data_dict["KOR_Trade_Balance"] = kor_trade
+
+        trade_df = pd.merge(us_export, us_import, on="Date", suffixes=("_export", "_import"))
+        us_trade = trade_df["Exports"] - trade_df["Imports"]
+        data_dict["US_Trade_Balance"] = us_trade
 
     if "Foreign Reserves" in ecos_data_dict and not ecos_data_dict["Foreign Reserves"].empty:
         df_FR = ecos_data_dict["Foreign Reserves"]
         kor_FR = split_by_country_code(df_FR, "04")
         data_dict["Foreign_Reserves"] = kor_FR
 
-    # -- 장단기 금리 분리 예시 --
+    # -- 장단기 금리 분리 --
     # LT, ST Interest Rate 데이터에서 장기, 단기 금리로 분리
     if "LT, ST Interest Rate" in ecos_data_dict and not ecos_data_dict["LT, ST Interest Rate"].empty:
         df_ir = ecos_data_dict["LT, ST Interest Rate"]
         ir_split = split_interest_rates(df_ir)
-        data_dict["LT_Interest_Rate"]=ir_split["long_term"]
-        data_dict["ST_Interest_Rate"]=ir_split["short_term"]
+        merged = pd.merge(ir_split["long_term"], ir_split["short_term"], on="Date", suffixes=("_long", "_short")) 
+        data_dict["Interest_Rate_Spread"] = merged["LT, ST Interest Rate_long"] - merged["LT, ST Interest Rate_short"]
+
     
     # 국고채 수익률 데이터 분리
     if "KTB Yield" in ecos_data_dict and not ecos_data_dict["KTB Yield"].empty:
@@ -285,6 +322,14 @@ def data_saver():
         
         for maturity, df in ktb_yields.items():
             data_dict[f"KTB_{maturity}"] = df
+
+    if "balance of payments" in ecos_data_dict and not ecos_data_dict["balance of payments"].empty:
+        df_bop = ecos_data_dict["balance of payments"]
+        bop = split_balance_of_payments(df_bop)
+
+        for maturity, df in bop.items():
+            data_dict[f"BOP_{maturity}"] = df
+
 
     # 환율 데이터 크롤링
     try:
